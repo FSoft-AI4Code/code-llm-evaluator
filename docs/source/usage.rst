@@ -16,9 +16,9 @@ Creating recipes
 ----------------
 
 To retrieve a list of random ingredients,
-you can use the ``lumache.get_random_ingredients()`` function:
+you can use the ``code_eval.task.HumanEval`` function:
 
-.. autofunction:: lumache.get_random_ingredients
+.. autofunction:: src.code_eval.task.HumanEval
 
 The ``kind`` parameter should be either ``"meat"``, ``"fish"``,
 or ``"veggies"``. Otherwise, :py:func:`lumache.get_random_ingredients`
