@@ -18,10 +18,9 @@ from code_eval.tasks.base import TaskBase
 
 
 class HumanEval(TaskBase):
+    """HumanEval benchmark loader."""
     TASK_NAME = "humaneval"
     DATASET_NAME_OR_PATH = 'codeparrot/instructhumaneval'
-    """Hello worlds
-    """
     def __init__(self, 
         inst_token: Optional[str]="",
         assist_token: Optional[str]="",
@@ -81,4 +80,5 @@ class HumanEval(TaskBase):
         return preprossed_ds
     
     def compute_metrics(self):
+        """Execute generated output to compute results"""
         pass

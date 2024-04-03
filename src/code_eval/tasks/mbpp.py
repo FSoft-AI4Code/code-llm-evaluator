@@ -11,6 +11,7 @@ from code_eval.tasks.base import TaskBase
 
 
 class MBPP(TaskBase):
+    """MBPP benchmark loader."""
     TASK_NAME = "mbpp"
     DATASET_NAME_OR_PATH = 'mbpp'
     
@@ -69,4 +70,5 @@ class MBPP(TaskBase):
         return preprossed_ds
     
     def compute_metrics(self):
+        """Execute generated output to compute results"""
         pass

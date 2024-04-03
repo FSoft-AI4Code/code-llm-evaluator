@@ -7,13 +7,13 @@ unittest.TestLoader.sortTestMethodsUsing = None # forge to execute by order
 class TestEvaluator(unittest.TestCase):
     def setUp(self) -> None:
         self.task = HumanEval()
-        self.model_name_or_path = "microsoft/phi-1"
+        self.model_name = "microsoft/phi-1"
         self.batch_size = 16
         return super().setUp()
     
     def test_evaluator_init(self):
         evaluator = Evaluator(self.task,
-                              model_name_or_path=self.model_name_or_path,
+                              model_name=self.model_name,
                               batch_size=self.batch_size)
 
         return evaluator

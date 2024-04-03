@@ -1,10 +1,26 @@
+"""Evaluator to load dataset and generate output. Customized config for 
+generate output.
+
+For example:
+
+.. code-block:: python
+
+    >>> from code_eval import Evaluator, HumanEval
+
+    >>> task = HumanEval()
+    >>> evaluator = Evaluator(task=task)
+
+    >>> output = evaluator.generate(temperature=0.9, num_return_sequences=3)
+    >>> result = evaluator.evaluate(output)
+
+"""
 import os
 import sys
 import json
 import time
 from tqdm import tqdm
 from warnings import warn
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 import torch
 
@@ -20,22 +36,27 @@ except ImportError:
 
 
 class Evaluator:
-    """Evaluator to load dataset and generate output. Customized config for 
-    generate output.
-    
-    For example:
-    >>> from code_eval import Evaluator, HumanEval
-    
-    >>> task = HumanEval()
-    >>> evaluator = Evaluator(task=task)
-    
-    >>> output = evaluator.generate(temperature=0.9, num_return_sequences=3)
-    >>> result = evaluator.evaluate(output)
+    """Evaluator class.
 
+        :param task: Evaluation task loader
+        :type task: TaskBase
+        :param model_name: Selected model for evaluating
+        :type model_name: str
+        :param peft_model: Adapter model, defaults to None
+        :type peft_model: Optional[str], optional
+        :param trust_remote_code: Huggingface argument, defaults to False
+        :type trust_remote_code: Optional[bool], optional
+        :param cache_dir: Downloaded cache directory, defaults to None
+        :type cache_dir: Optional[str], optional
+        :param batch_size: Generation batch size, defaults to 16
+        :type batch_size: Optional[int], optional
+        :param save_dir: Saving generation directory, defaults to "./output"
+        :type save_dir: Optional[str], optional
     """
+    
     def __init__(self, 
         task: TaskBase,
-        model_name_or_path: str,
+        model_name: str,
         peft_model: Optional[str] = None,
         trust_remote_code: Optional[bool] = False,
         cache_dir: Optional[str] = None,
@@ -47,12 +68,13 @@ class Evaluator:
         self.compute_metrics = task.compute_metrics
         self.dataset = task.prepare_dataset()
         
-        self.model_name_or_path = model_name_or_path
+        self.model_name = model_name
         self.peft_model = peft_model
         self.batch_size = batch_size
         self.trust_remote_code = trust_remote_code
         self.cache_dir = cache_dir
         self.save_dir = save_dir
+
     
     def generate(self,
         engine: Optional[str]="vllm",
@@ -60,10 +82,26 @@ class Evaluator:
         max_tokens: Optional[int]=256,
         temperature: Optional[float]=0.9,
         repetition_penalty: Optional[float]=1.2
-        ) -> Dict:
+        ) -> List:
         """Start engine and generate output
-        
+
+        :param engine: Engine to inference model. 
+            Choose between native ``transformers`` or ``vllms`` for fast infernce, defaults to "vllm"
+        :type engine: Optional[str], optional
+        :param num_return_sequences: Model generated n, defaults to 1
+        :type num_return_sequences: Optional[int], optional
+        :param max_tokens: Max new tokens, defaults to 256
+        :type max_tokens: Optional[int], optional
+        :param temperature: Model generate temperature, defaults to 0.9
+        :type temperature: Optional[float], optional
+        :param repetition_penalty: Repetition penalty, defaults to 1.2
+        :type repetition_penalty: Optional[float], optional
+        :raises NotImplementedError: _description_
+        :return: List of generated result, stored in dictionary object 
+            with ``task_id``, ``question`` and ``answer`` key.
+        :rtype: List
         """
+
         
         gen_config = dict(
             max_tokens=max_tokens,
@@ -92,6 +130,7 @@ class Evaluator:
         save_path = os.path.join(self.save_dir, f"{self.TASK_NAME}.generated.jsonl")
         writer = open(save_path, "w")
         
+        results = []
         for batch_id, batch in tqdm(enumerate(ds_loader), total=len(ds_loader), desc="Generating"):
             outputs = self._generate_fn(batch['question'])
 
@@ -99,8 +138,9 @@ class Evaluator:
                 res = dict(
                     id=batch['task_id'][idx],
                     question=batch['question'][idx],
-                    answer=outputs[idx].outputs[0].text
+                    answer=outputs[idx]
                 )
+                results.append(res)
                 json.dump(res, writer)
                 writer.write("\n")
 
@@ -108,6 +148,8 @@ class Evaluator:
         
         print("=======  Finished {}  =======".format(self.TASK_NAME))
         print("Completion time: %d s", (time.time() - start_time))
+        
+        return results
     
     def _distributed_initialize():
         pass
@@ -120,8 +162,12 @@ class Evaluator:
         max_tokens: int,
         temperature: float,
         repetition_penalty: float,
-        num_return_sequences: int) -> Dict:
-        
+        num_return_sequences: int):
+        """Initialize vllm engine
+
+        :return: vLLM's model, sampling parameters and lora config
+        :rtype: set
+        """
         ngpus = torch.cuda.device_count()
         engine_kwargs = dict(
             disable_log_stats=True,
@@ -130,7 +176,7 @@ class Evaluator:
             trust_remote_code=self.trust_remote_code,
         )
         
-        self.model = LLM(self.model_name_or_path, 
+        self.model = LLM(self.model_name, 
             enable_lora=True if self.peft_model else None,
             **engine_kwargs)
         
@@ -147,10 +193,20 @@ class Evaluator:
         
         return (self.model, self.sampling_params, self.lora_request)
     
-    def _vllm_generate(self, batch):
-        return self.model.generate(batch, 
+    def _vllm_generate(self, batch: List) -> List: # type: ignore
+        """Generated function
+
+        :param batch: batched string inputs
+        :type batch: List[str]
+        :return: List of generated outputs
+        :rtype: List[str]
+        """
+        outputs = self.model.generate(batch, 
                                    self.sampling_params, 
                                    lora_request=self.lora_request)
+        
+        for item in outputs:
+            yield item.outputs[0].text
     
     def evaluate():
         pass

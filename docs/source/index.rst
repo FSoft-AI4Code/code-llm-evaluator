@@ -6,7 +6,7 @@
 .. include:: ../../README.rst
 
 Welcome to Code Evaluator's documentation
-=====================================
+=========================================
 
 
 Contents

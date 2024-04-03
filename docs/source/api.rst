@@ -1,7 +1,12 @@
-API
-===
+API Reference
+=============
+
+Modules
+-------
 
 .. autosummary::
-   :toctree: generated
+   :toctree: _autosummary
+   :template: custom-module-template.rst
+   :recursive:
 
    code_eval

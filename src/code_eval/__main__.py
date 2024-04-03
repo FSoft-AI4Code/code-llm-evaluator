@@ -11,7 +11,7 @@ def get_args():
     
     parser.add_argument("--task",
                         help='Select pre-defined task')
-    parser.add_argument("-m", "--model_name_or_path", type=str,
+    parser.add_argument("--model_name", type=str,
                         help='Local path or Huggingface Hub link to load model')
     parser.add_argument("--peft_model", default=None, type=str,
                         help='Lora config')
@@ -63,7 +63,7 @@ def main():
             raise NotImplementedError("Not support task `{}` yet".format(args.task))
         
         evaluator = Evaluator(task=task_loader,
-                            model_name_or_path=args.model_name_or_path,
+                            model_name=args.model_name,
                             peft_model=args.peft_model,
                             batch_size=args.batch_size,
                             cache_dir=args.cache_dir,
