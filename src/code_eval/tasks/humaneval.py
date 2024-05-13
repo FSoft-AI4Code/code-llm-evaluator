@@ -79,7 +79,7 @@ class HumanEval(TaskBase):
         
         return preprossed_ds
     
-    def postprocess_generation(self, generation, idx):
+    def postprocess_generation(self, generation):
         """Defines the postprocessing for a LM generation.
         :param generation: str
             code generation from LM

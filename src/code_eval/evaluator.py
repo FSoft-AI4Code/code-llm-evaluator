@@ -31,6 +31,7 @@ from code_eval.tasks.base import TaskBase
 from code_eval.tasks.mbpp import MBPP
 
 from accelerate import Accelerator, PartialState
+from accelerate.utils import gather_object
 from transformers import (
     HfArgumentParser,
     GenerationConfig,
@@ -78,6 +79,7 @@ class Evaluator:
         batch_size: Optional[int] = 16,
         save_dir: Optional[str] = "./output"
     ) -> None:
+        self.task = task
         self.TASK_NAME = task.TASK_NAME
         self.DATASET_NAME_OR_PATH = task.DATASET_NAME_OR_PATH
         self.compute_metrics = task.compute_metrics
@@ -90,6 +92,7 @@ class Evaluator:
         self.trust_remote_code = trust_remote_code
         self.cache_dir = cache_dir
         self.save_dir = save_dir
+        os.makedirs(self.save_dir, exist_ok=True)
 
     
     def generate(self,
@@ -145,37 +148,50 @@ class Evaluator:
                     for i in range(0, len(self.dataset), self.batch_size)]
         
         start_time = time.time()
-        self._generate_fn()
+        result = self._generate_fn()
         
-        # results = self._do_parallel_generate()
+        self.postprocessing(result)
         
         print("=======  Finished {}  =======".format(self.TASK_NAME))
         print("Completion time: %d s", (time.time() - start_time))
         
         # return results
+        
+    def postprocessing(self, outputs):
+        save_path = os.path.join(self.save_dir, f"{self.TASK_NAME}.final.generated.jsonl")
+        
+        with open(save_path, "w") as writer:
+            for idx in range(len(outputs['question'])):
+                res = dict(
+                    task_id=outputs['task_id'][idx],
+                    prompt=outputs['question'][idx],
+                    response=outputs['generation'][idx]
+                )
+            
+                json.dump(res, writer)
+                writer.write("\n")
     
-    def _do_parallel_generate(self):
-        # os.makedirs(self.save_dir, exist_ok=True)
-        # save_path = os.path.join(self.save_dir, f"{self.TASK_NAME}.generated.jsonl")
-        # writer = open(save_path, "w")
+    def save_result(self, batched_outputs: Dict):
+        assert 'question' in batched_outputs.keys()
+        assert 'generation' in batched_outputs.keys()
         
-        result = self._generate_fn()
+        try:
+            if self.accelerator.distributed_type == "MULTI_GPU":
+                save_path = os.path.join(self.save_dir, 
+                            f"{self.TASK_NAME}.raw.generated.{self.accelerator.process_index}.jsonl")
+        except KeyError:
+            save_path = os.path.join(self.save_dir, f"{self.TASK_NAME}.final.generated.jsonl")
         
-        return result
-        # for idx in range(len(outputs)):
-        #         res = dict(
-        #             task_id=batch['task_id'][idx],
-        #             prompt=batch['question'][idx],
-        #             response=outputs[idx]
-        #         )
-                
-        #         # TODO: saving
-        #         results.append(res)
-        #         json.dump(res, writer)
-        #         writer.write("\n")
-
-        # writer.close()
-        # return results
+        with open(save_path, "a") as writer:
+            for idx in range(len(batched_outputs['question'])):
+                res = dict(
+                    task_id=batched_outputs['task_id'][idx],
+                    prompt=batched_outputs['question'][idx],
+                    response=batched_outputs['generation'][idx]
+                )
+            
+                json.dump(res, writer)
+                writer.write("\n")
     
     def _distributed_initialize(
         self,
@@ -222,30 +238,35 @@ class Evaluator:
             print("Set EOS_TOKEN to PAD_TOKEN")
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-
     def _distributed_generate(self):
         # ``Accelerate`` distribute data and model
         assert self.accelerator
         
         for i in range(len(self.ds_loader)):
             question = self.ds_loader[i]['question']
-            self.ds_loader[i]['question'] = self.tokenizer(question, return_tensors="pt", padding=True)
+            self.ds_loader[i]['question_ids'] = self.tokenizer(question, return_tensors="pt", padding=True)
         
-        with self.accelerator.split_between_processes(self.ds_loader) as batched_prompts:
-            for batch in tqdm(batched_prompts, desc="Generating"):
-                batch = batch['question'].to(self.accelerator.device)
-                outputs = self.model.generate(**batch, 
+        result = []
+        with self.accelerator.split_between_processes(self.ds_loader, apply_padding=True) as batched_prompts:
+            index = self.accelerator.process_index
+            for batch in tqdm(batched_prompts, desc=f"Process: {index} | Generating", position=index):
+                input_ids = batch['question_ids'].to(self.accelerator.device)
+                outputs = self.model.generate(**input_ids, 
                                             generation_config=self.generation_config,
                                             pad_token_id=self.tokenizer.eos_token_id,
                                             eos_token_id=self.tokenizer.eos_token_id)
                 
-                outputs = [output[len(prompt) :] for prompt, output in zip(batch["input_ids"], outputs)]
+                outputs = [output[len(prompt) :] for prompt, output in zip(input_ids["input_ids"], outputs)]
                 batch_results = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
                 
-                for res in batch_results:
-                    print(res)
-                    yield res
+                batch['generation'] = batch_results
+                result.extend(batch['generation'])
+                self.save_result(batch)
+                
         
+        result_gather = gather_object(result)[: len(self.dataset)]
+        self.dataset = self.dataset.add_column('generation', result_gather)
+        return self.dataset
 
     def _vllm_initialize(
         self,
@@ -284,13 +305,20 @@ class Evaluator:
         return (self.model, self.sampling_params, self.lora_request)
     
     def _vllm_generate(self):
+        result = []
         for batch in tqdm(self.ds_loader, total=len(self.ds_loader), desc="Generating"):
             outputs = self.model.generate(batch['question'], 
                                           self.sampling_params, 
                                           lora_request=self.lora_request)
+
+            batch_results = [output.outputs[0].text[len(prompt) :] for prompt, output in zip(batch["question"], outputs)]
+            batch['generation'] = batch_results
+            result.extend(batch['generation'])
+            self.save_result(batch)
+            
+        self.dataset = self.dataset.add_column('generation', result)
+        return self.dataset
         
-            for item in outputs:
-                yield item.outputs[0].text
             
     def evaluate():
         pass

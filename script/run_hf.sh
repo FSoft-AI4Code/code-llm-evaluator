@@ -7,6 +7,7 @@ accelerate launch --config_file=script/test_config.yaml \
     src/code_eval/__main__.py \
     --model_name microsoft/phi-1 \
     --task humaneval \
-    --max_tokens 125 \
+    --max_tokens 64 \
     --batch_size 8 \
-    --backend tf
+    --backend tf \
+    --save_dir output/phi-1
