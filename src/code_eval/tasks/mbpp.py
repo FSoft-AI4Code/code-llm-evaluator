@@ -57,7 +57,7 @@ class MBPP(TaskBase):
                 
                 # MODEL INPUTS HERE
                 model_inputs['question'].append(TEMPLATE.format(
-                    self.inst_token + question + self.assist_token + context
+                    self.inst_token + question + context + self.assist_token
                 ))
             
             model_inputs['task_id'] = examples['task_id']

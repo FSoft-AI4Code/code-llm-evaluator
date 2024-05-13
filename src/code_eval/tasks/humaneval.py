@@ -26,7 +26,7 @@ class HumanEval(TaskBase):
         assist_token: Optional[str]="",
         mode: Optional[str]=None) -> None:
         
-        self.stop_words = ["\nclass", "\ndef", "\n#", "\n@", "\nprint", "\nif", "\n```", "<file_sep>"]
+        self.stop_words = ["\nclass", "\ndef", "\n#", "\n@", "\nprint", "\nif", "\n```", "<file_sep>", "\n>>>"]
         super().__init__()
 
         self.k = [1, 10, 100]
@@ -78,6 +78,18 @@ class HumanEval(TaskBase):
                                         remove_columns=self.dataset.column_names)
         
         return preprossed_ds
+    
+    def postprocess_generation(self, generation, idx):
+        """Defines the postprocessing for a LM generation.
+        :param generation: str
+            code generation from LM
+        :param idx: int
+            index of doc in the dataset to which the generation belongs
+            (not used for Humaneval-Task)
+        """
+        prompt = self.get_prompt(self.dataset["test"][idx])
+        generation = generation[len(prompt) :]
+        return prompt + self._stop_at_stop_token(generation, self.stop_words)
     
     def compute_metrics(self):
         """Execute generated output to compute results"""

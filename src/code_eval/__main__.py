@@ -20,8 +20,8 @@ def get_args():
     parser.add_argument("--save_dir", default="./output", type=str,
                         help='Save generation and result path')
     
-    parser.add_argument("--engine", default="vllm", type=str,
-                        help='Select between VLLM or Huggingface engine')
+    parser.add_argument("--backend", default="vllm", type=str,
+                        help="Select between ``vllm`` or Huggingface's transformers ``tf`` backend")
     parser.add_argument("--max_tokens", default=128, type=int,
                         help='Number of max new tokens')
     parser.add_argument("--batch_size", default=16, type=int)
@@ -31,31 +31,42 @@ def get_args():
     parser.add_argument("--repetition_penalty", default=1.2, type=float)
     parser.add_argument("--num_return_sequences", default=1, type=int)
     
-    return parser.parse_args()
-
-def main():
-    args = get_args()
+    args = parser.parse_args()
     
-    task = args.task
-    if task:
+    if not args.cache_dir:
+        TRANSFORMER_CACHE = os.getenv("TRANSFORMER_CACHE")
+        HF_HOME = os.getenv("HF_HOME")
+        if TRANSFORMER_CACHE:
+            args.cache_dir = TRANSFORMER_CACHE
+        else:
+            args.cache_dir = HF_HOME
+        
+    return args, parser
+
+
+if __name__ == '__main__':
+    args, parsre = get_args()
+    
+    if args.task:
+        print(args)
         from code_eval.evaluator import Evaluator
         from code_eval.tasks import HumanEval, MBPP
     
-        if task == "humaneval":
+        if args.task == "humaneval":
             task_loader = HumanEval(inst_token=args.inst_token,
                                     assist_token=args.assist_token)
-        elif task == "instruct-humaneval":
+        elif args.task == "instruct-humaneval":
             task_loader = HumanEval(inst_token=args.inst_token,
                                     assist_token=args.assist_token,
                                     mode="instruct")
-        elif task == "instruct-humaneval-no-context":
+        elif args.task == "instruct-humaneval-no-context":
             task_loader = HumanEval(inst_token=args.inst_token,
                                     assist_token=args.assist_token,
                                     mode="instruct-no-context")
-        elif task == "mbpp":
+        elif args.task == "mbpp":
             task_loader = MBPP(inst_token=args.inst_token,
                                     assist_token=args.assist_token)
-        elif task == "mbpp-no-context":
+        elif args.task == "mbpp-no-context":
             task_loader = MBPP(inst_token=args.inst_token,
                                     assist_token=args.assist_token,
                                     mode="no-context")
@@ -70,14 +81,14 @@ def main():
                             save_dir=args.save_dir)
 
         output = evaluator.generate(
-            engine="vllm",
+            backend=args.backend,
             num_return_sequences=args.num_return_sequences,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             repetition_penalty=args.repetition_penalty
         )
         
-        print("===== Finish generated =====")
+        print("======= Finish generated =======")
 
-if __name__ == '__main__':
-    main()
+    else:
+        parsre.print_help()

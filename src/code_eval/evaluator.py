@@ -18,14 +18,29 @@ import os
 import sys
 import json
 import time
+import torch.utils
+import torch.utils.data
 from tqdm import tqdm
 from warnings import warn
 from typing import Optional, Dict, List
 
 import torch
+from torch.utils.data import DataLoader
 
 from code_eval.tasks.base import TaskBase
 from code_eval.tasks.mbpp import MBPP
+
+from accelerate import Accelerator, PartialState
+from transformers import (
+    HfArgumentParser,
+    GenerationConfig,
+    AutoModelForCausalLM,
+    AutoModelForSeq2SeqLM,
+    AutoTokenizer,
+    StoppingCriteria, 
+    StoppingCriteriaList,
+    DataCollatorWithPadding
+)
 
 try:
     from vllm import LLM, SamplingParams
@@ -67,6 +82,7 @@ class Evaluator:
         self.DATASET_NAME_OR_PATH = task.DATASET_NAME_OR_PATH
         self.compute_metrics = task.compute_metrics
         self.dataset = task.prepare_dataset()
+        print(self.dataset)
         
         self.model_name = model_name
         self.peft_model = peft_model
@@ -77,17 +93,17 @@ class Evaluator:
 
     
     def generate(self,
-        engine: Optional[str]="vllm",
+        backend: Optional[str]="vllm",
         num_return_sequences: Optional[int]=1,
         max_tokens: Optional[int]=256,
         temperature: Optional[float]=0.9,
         repetition_penalty: Optional[float]=1.2
         ) -> List:
-        """Start engine and generate output
+        """Start backend and generate output
 
-        :param engine: Engine to inference model. 
+        :param backend: backend to inference model. 
             Choose between native ``transformers`` or ``vllms`` for fast infernce, defaults to "vllm"
-        :type engine: Optional[str], optional
+        :type backend: Optional[str], optional
         :param num_return_sequences: Model generated n, defaults to 1
         :type num_return_sequences: Optional[int], optional
         :param max_tokens: Max new tokens, defaults to 256
@@ -98,10 +114,13 @@ class Evaluator:
         :type repetition_penalty: Optional[float], optional
         :raises NotImplementedError: _description_
         :return: List of generated result, stored in dictionary object 
-            with ``task_id``, ``question`` and ``answer`` key.
+            with ``task_id``, ``prompt`` and ``answer`` key.
         :rtype: List
         """
-
+        print(f"Evaluating task: [{self.TASK_NAME}]")
+        print(f"pt={torch.__version__}, cuda={torch.version.cuda}, nccl={torch.cuda.nccl.version()}")
+        print(f"device compute capabilities={torch.cuda.get_device_capability()}")
+        print(f"pytorch compute capabilities={torch.cuda.get_arch_list()}")
         
         gen_config = dict(
             max_tokens=max_tokens,
@@ -110,66 +129,137 @@ class Evaluator:
             num_return_sequences=num_return_sequences,
         )
         
-        if engine=="vllm":
+        if backend == "vllm":
             assert VLLM_AVAILABLE, "vllm not installed, try `pip install vllm`"
             self._vllm_initialize(**gen_config)
             self._generate_fn = self._vllm_generate
         
-        elif engine == "hf":
+        elif backend == "tf":
             self._distributed_initialize(**gen_config)
             self._generate_fn = self._distributed_generate
 
         else:
             raise NotImplementedError
         
-        start_time = time.time()
-        ds_loader = [self.dataset[i:i+self.batch_size] 
+        self.ds_loader = [self.dataset[i:i+self.batch_size] 
                     for i in range(0, len(self.dataset), self.batch_size)]
         
-        os.makedirs(self.save_dir, exist_ok=True)
-        save_path = os.path.join(self.save_dir, f"{self.TASK_NAME}.generated.jsonl")
-        writer = open(save_path, "w")
+        start_time = time.time()
+        self._generate_fn()
         
-        results = []
-        for batch_id, batch in tqdm(enumerate(ds_loader), total=len(ds_loader), desc="Generating"):
-            outputs = self._generate_fn(batch['question'])
-
-            for idx in range(len(outputs)):
-                res = dict(
-                    id=batch['task_id'][idx],
-                    question=batch['question'][idx],
-                    answer=outputs[idx]
-                )
-                results.append(res)
-                json.dump(res, writer)
-                writer.write("\n")
-
-        writer.close()
+        # results = self._do_parallel_generate()
         
         print("=======  Finished {}  =======".format(self.TASK_NAME))
         print("Completion time: %d s", (time.time() - start_time))
         
-        return results
+        # return results
     
-    def _distributed_initialize():
-        pass
+    def _do_parallel_generate(self):
+        # os.makedirs(self.save_dir, exist_ok=True)
+        # save_path = os.path.join(self.save_dir, f"{self.TASK_NAME}.generated.jsonl")
+        # writer = open(save_path, "w")
+        
+        result = self._generate_fn()
+        
+        return result
+        # for idx in range(len(outputs)):
+        #         res = dict(
+        #             task_id=batch['task_id'][idx],
+        #             prompt=batch['question'][idx],
+        #             response=outputs[idx]
+        #         )
+                
+        #         # TODO: saving
+        #         results.append(res)
+        #         json.dump(res, writer)
+        #         writer.write("\n")
+
+        # writer.close()
+        # return results
     
-    def _distributed_generate(self, batch):
-        raise NotImplementedError
-    
+    def _distributed_initialize(
+        self,
+        max_tokens: int,
+        temperature: float,
+        repetition_penalty: float,
+        num_return_sequences: int):
+        """Initilize native transformers backend"""
+        self.accelerator = Accelerator()
+        generate_args = dict(
+            max_new_tokens=max_tokens,
+            num_return_sequences=num_return_sequences,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty
+        )
+        self.generation_config = GenerationConfig(**generate_args)
+        
+        model_kwargs = dict(
+            cache_dir=self.cache_dir,
+            trust_remote_code=self.trust_remote_code,
+            load_in_8bit=False
+        )
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name, **model_kwargs)
+            
+        except KeyError: # TODO: except load seq2seq model
+            self.model = AutoModelForSeq2SeqLM.from_pretrained(
+                self.model_name, **model_kwargs)
+        
+        if self.peft_model:
+            from peft import PeftModel
+            self.model = PeftModel.from_pretrained(self.model, self.peft_model)
+        
+        self.model.to(self.accelerator.device)
+        
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name, 
+            trust_remote_code=self.trust_remote_code,
+            padding_side="left"
+        )
+        
+        if not self.tokenizer.pad_token:
+            print("Set EOS_TOKEN to PAD_TOKEN")
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+
+    def _distributed_generate(self):
+        # ``Accelerate`` distribute data and model
+        assert self.accelerator
+        
+        for i in range(len(self.ds_loader)):
+            question = self.ds_loader[i]['question']
+            self.ds_loader[i]['question'] = self.tokenizer(question, return_tensors="pt", padding=True)
+        
+        with self.accelerator.split_between_processes(self.ds_loader) as batched_prompts:
+            for batch in tqdm(batched_prompts, desc="Generating"):
+                batch = batch['question'].to(self.accelerator.device)
+                outputs = self.model.generate(**batch, 
+                                            generation_config=self.generation_config,
+                                            pad_token_id=self.tokenizer.eos_token_id,
+                                            eos_token_id=self.tokenizer.eos_token_id)
+                
+                outputs = [output[len(prompt) :] for prompt, output in zip(batch["input_ids"], outputs)]
+                batch_results = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+                
+                for res in batch_results:
+                    print(res)
+                    yield res
+        
+
     def _vllm_initialize(
         self,
         max_tokens: int,
         temperature: float,
         repetition_penalty: float,
         num_return_sequences: int):
-        """Initialize vllm engine
+        """Initialize vllm backend
 
         :return: vLLM's model, sampling parameters and lora config
         :rtype: set
         """
         ngpus = torch.cuda.device_count()
-        engine_kwargs = dict(
+        backend_kwargs = dict(
             disable_log_stats=True,
             tensor_parallel_size=ngpus,
             download_dir=self.cache_dir,
@@ -178,7 +268,7 @@ class Evaluator:
         
         self.model = LLM(self.model_name, 
             enable_lora=True if self.peft_model else None,
-            **engine_kwargs)
+            **backend_kwargs)
         
         self.lora_request = None
         if self.peft_model:
@@ -193,21 +283,15 @@ class Evaluator:
         
         return (self.model, self.sampling_params, self.lora_request)
     
-    def _vllm_generate(self, batch: List) -> List: # type: ignore
-        """Generated function
-
-        :param batch: batched string inputs
-        :type batch: List[str]
-        :return: List of generated outputs
-        :rtype: List[str]
-        """
-        outputs = self.model.generate(batch, 
-                                   self.sampling_params, 
-                                   lora_request=self.lora_request)
+    def _vllm_generate(self):
+        for batch in tqdm(self.ds_loader, total=len(self.ds_loader), desc="Generating"):
+            outputs = self.model.generate(batch['question'], 
+                                          self.sampling_params, 
+                                          lora_request=self.lora_request)
         
-        for item in outputs:
-            yield item.outputs[0].text
-    
+            for item in outputs:
+                yield item.outputs[0].text
+            
     def evaluate():
         pass
     
