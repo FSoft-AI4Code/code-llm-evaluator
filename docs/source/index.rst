@@ -16,4 +16,5 @@ Contents
 
    Home <self>
    usage
+   argument
    api

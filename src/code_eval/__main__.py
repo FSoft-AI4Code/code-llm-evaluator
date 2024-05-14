@@ -20,7 +20,7 @@ def get_args():
     parser.add_argument("--save_dir", default="./output", type=str,
                         help='Save generation and result path')
     
-    parser.add_argument("--backend", default="vllm", type=str,
+    parser.add_argument("--backend", default="tf", type=str,
                         help="Select between ``vllm`` or Huggingface's transformers ``tf`` backend")
     parser.add_argument("--max_tokens", default=128, type=int,
                         help='Number of max new tokens')
@@ -44,51 +44,57 @@ def get_args():
     return args, parser
 
 
-if __name__ == '__main__':
+def main():
     args, parsre = get_args()
-    
     if args.task:
-        print(args)
-        from code_eval.evaluator import Evaluator
-        from code_eval.tasks import HumanEval, MBPP
-    
-        if args.task == "humaneval":
-            task_loader = HumanEval(inst_token=args.inst_token,
-                                    assist_token=args.assist_token)
-        elif args.task == "instruct-humaneval":
-            task_loader = HumanEval(inst_token=args.inst_token,
-                                    assist_token=args.assist_token,
-                                    mode="instruct")
-        elif args.task == "instruct-humaneval-no-context":
-            task_loader = HumanEval(inst_token=args.inst_token,
-                                    assist_token=args.assist_token,
-                                    mode="instruct-no-context")
-        elif args.task == "mbpp":
-            task_loader = MBPP(inst_token=args.inst_token,
-                                    assist_token=args.assist_token)
-        elif args.task == "mbpp-no-context":
-            task_loader = MBPP(inst_token=args.inst_token,
-                                    assist_token=args.assist_token,
-                                    mode="no-context")
-        else:
-            raise NotImplementedError("Not support task `{}` yet".format(args.task))
-        
-        evaluator = Evaluator(task=task_loader,
-                            model_name=args.model_name,
-                            peft_model=args.peft_model,
-                            batch_size=args.batch_size,
-                            cache_dir=args.cache_dir,
-                            save_dir=args.save_dir)
-
-        output = evaluator.generate(
-            backend=args.backend,
-            num_return_sequences=args.num_return_sequences,
-            max_tokens=args.max_tokens,
-            temperature=args.temperature,
-            repetition_penalty=args.repetition_penalty
-        )
-        
-        print("======= Finish generated =======")
-
+        generate(args=args)
     else:
         parsre.print_help()
+    
+
+def generate(args):
+    print(args)
+    from code_eval.evaluator import Evaluator
+    from code_eval.tasks import HumanEval, MBPP
+
+    if args.task == "humaneval":
+        task_loader = HumanEval(inst_token=args.inst_token,
+                                assist_token=args.assist_token)
+    elif args.task == "instruct-humaneval":
+        task_loader = HumanEval(inst_token=args.inst_token,
+                                assist_token=args.assist_token,
+                                mode="instruct")
+    elif args.task == "instruct-humaneval-no-context":
+        task_loader = HumanEval(inst_token=args.inst_token,
+                                assist_token=args.assist_token,
+                                mode="instruct-no-context")
+    elif args.task == "mbpp":
+        task_loader = MBPP(inst_token=args.inst_token,
+                                assist_token=args.assist_token)
+    elif args.task == "mbpp-no-context":
+        task_loader = MBPP(inst_token=args.inst_token,
+                                assist_token=args.assist_token,
+                                mode="no-context")
+    else:
+        raise NotImplementedError("Not support task `{}` yet".format(args.task))
+    
+    evaluator = Evaluator(task=task_loader,
+                        model_name=args.model_name,
+                        peft_model=args.peft_model,
+                        batch_size=args.batch_size,
+                        cache_dir=args.cache_dir,
+                        save_dir=args.save_dir)
+
+    output = evaluator.generate(
+        backend=args.backend,
+        num_return_sequences=args.num_return_sequences,
+        max_tokens=args.max_tokens,
+        temperature=args.temperature,
+        repetition_penalty=args.repetition_penalty
+    )
+    
+    print("======= Finish generated =======")
+
+
+if __name__ == '__main__':
+    main()
