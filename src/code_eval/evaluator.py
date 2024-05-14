@@ -179,6 +179,8 @@ class Evaluator:
             if self.accelerator.distributed_type == "MULTI_GPU":
                 save_path = os.path.join(self.save_dir, 
                             f"{self.TASK_NAME}.raw.generated.{self.accelerator.process_index}.jsonl")
+            else:
+                save_path = os.path.join(self.save_dir, f"{self.TASK_NAME}.final.generated.jsonl")
         except (KeyError, AttributeError): 
             save_path = os.path.join(self.save_dir, f"{self.TASK_NAME}.final.generated.jsonl")
         
