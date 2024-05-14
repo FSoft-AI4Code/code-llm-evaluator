@@ -105,7 +105,7 @@ class Evaluator:
         """Start backend and generate output
 
         :param backend: backend to inference model. 
-            Choose between native ``transformers`` or ``vllms`` for fast infernce, defaults to "vllm"
+            Choose between native ``tf`` (transformers) or ``vllm`` for fast infernce, defaults to "vllm"
         :type backend: Optional[str], optional
         :param num_return_sequences: Model generated n, defaults to 1
         :type num_return_sequences: Optional[int], optional
@@ -179,7 +179,7 @@ class Evaluator:
             if self.accelerator.distributed_type == "MULTI_GPU":
                 save_path = os.path.join(self.save_dir, 
                             f"{self.TASK_NAME}.raw.generated.{self.accelerator.process_index}.jsonl")
-        except KeyError:
+        except (KeyError, AttributeError): 
             save_path = os.path.join(self.save_dir, f"{self.TASK_NAME}.final.generated.jsonl")
         
         with open(save_path, "a") as writer:
@@ -311,8 +311,7 @@ class Evaluator:
                                           self.sampling_params, 
                                           lora_request=self.lora_request)
 
-            batch_results = [output.outputs[0].text[len(prompt) :] for prompt, output in zip(batch["question"], outputs)]
-            batch['generation'] = batch_results
+            batch['generation'] = [output.outputs[0].text for output in outputs]
             result.extend(batch['generation'])
             self.save_result(batch)
             
